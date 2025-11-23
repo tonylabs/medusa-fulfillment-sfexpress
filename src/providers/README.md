@@ -6,24 +6,30 @@ Then, you register them in the Medusa application as `plugin-name/providers/my-n
 
 ```ts
 module.exports = defineConfig({
-  // ...
+  projectConfig: {
+    // ...
+  },
   modules: [
+    // ... other modules
     {
-      resolve: "@medusajs/medusa/notification",
+      key: Modules.FULFILLMENT,
+      resolve: "@medusajs/fulfillment",
       options: {
         providers: [
           {
-            resolve: "@myorg/plugin-name/providers/my-notification",
-            id: "my-notification",
+            id: "sf-express",
+            resolve: "@gerbergpt/medusa-fulfillment-sfexpress/providers",
             options: {
-              channels: ["email"],
-              // provider options...
+              sandbox: process.env.SFEXPRESS_ENV === "sandbox",
+              partner_id: process.env.SFEXPRESS_PARTNER_ID,
+              secret_sandbox: process.env.SFEXPRESS_SECRET_SANDBOX,
+              secret_production: process.env.SFEXPRESS_SECRET_PRODUCTION,
             },
           },
         ],
       },
     },
-  ],
+  ]
 })
 ```
 
