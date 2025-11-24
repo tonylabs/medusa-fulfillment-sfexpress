@@ -31,6 +31,8 @@ module.exports = defineConfig({
     },
   ]
 })
+
+The provider authenticates with SF-Express via the OAuth2 `accessToken` flow (see `docs/sf-express/API.md`). The `secret_*` values are used to retrieve tokens; message-digest signatures are no longer required.
 ```
 
 Learn more in [this documentation](https://docs.medusajs.com/learn/fundamentals/plugins/create).
