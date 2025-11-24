@@ -1,6 +1,5 @@
 import { AbstractFulfillmentProviderService } from "@medusajs/framework/utils"
 import {
-  Logger,
   CalculatedShippingOptionPrice,
   CalculateShippingOptionPriceContext,
   CalculateShippingOptionPriceDTO,
@@ -9,9 +8,12 @@ import {
   FulfillmentItemDTO,
   FulfillmentOption,
   FulfillmentOrderDTO,
+  Logger,
 } from "@medusajs/framework/types"
+import { MedusaError } from "@medusajs/framework/utils"
 
 import { Client } from "./client"
+import { SFExpressResponse } from "./types"
 
 type InjectedDependencies = {
   logger: Logger
@@ -23,10 +25,33 @@ export type Options = {
   secret_production?: string
   sandbox?: boolean
   debug?: boolean
+  timeout?: number
+  default_src_province?: string
+  default_src_city?: string
+  default_src_district?: string
+  default_src_address?: string
+  default_dest_province?: string
+  default_dest_city?: string
+  default_dest_district?: string
+  default_dest_address?: string
+  default_payment_terms?: string
+  default_send_time?: string
 }
 
-type LogisticsProduct = Record<string, any>
-type PriceType = "flat" | "calculated"
+type ShippingAddressPayload = {
+  province?: string
+  city?: string
+  district?: string
+  address?: string
+  code?: string
+}
+
+type NormalizedOption = {
+  id: string
+  name: string
+  businessType?: string
+  raw?: any
+}
 
 class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderService {
   static identifier = "fulfillment-sfexpress"
@@ -34,263 +59,280 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
   protected options: Options
   protected client: Client
 
-  constructor(
-    { logger }: InjectedDependencies,
-    options: Options
-  ) {
+  constructor({ logger }: InjectedDependencies, options: Options) {
     super()
     this.logger = logger
     this.options = options
     this.client = new Client(options)
   }
 
+  //https://docs.medusajs.com/resources/references/fulfillment/provider#getfulfillmentoptions
   async getFulfillmentOptions(): Promise<FulfillmentOption[]> {
-    const products = await this.retrieveLogisticsProducts()
-    return products.map((product) => this.toFulfillmentOption(product))
+    return [
+      {
+        id: "sf-standard",
+        name: "顺丰标准",
+        data: {
+          businessType: "standard",
+        },
+      },
+      {
+        id: "sf-express",
+        name: "顺丰特快",
+        data: {
+          businessType: "express",
+        },
+      },
+    ]
   }
 
-  async validateFulfillmentData(optionData: any, data: any, context: any): Promise<any> {
-    try {
-      // Validate the fulfillment data
-      this.logger.info(`Validating fulfillment data: ${JSON.stringify({ optionData, data })}`)
-
-      const normalizedOption = this.resolveOption(optionData)
-      if (!normalizedOption) {
-        throw new Error("Unknown SF Express fulfillment option.")
-      }
-
-      if (!data) {
-        throw new Error("Missing required fulfillment data.")
-      }
-
-      return data
-    } catch (error) {
-      this.logger.error(`Fulfillment validation error: ${error.message}`)
-      throw error
+  async validateFulfillmentData(optionData: any, data: any): Promise<any> {
+    const normalized = this.resolveOption(optionData)
+    if (!normalized) {
+      throw new MedusaError(MedusaError.Types.INVALID_DATA, "Unknown SF-Express fulfillment option")
     }
+    return data ?? {}
   }
 
   async validateOption(data: any): Promise<boolean> {
-    try {
-      // Validate if the option is available
-      this.logger.info(`Validating option: ${JSON.stringify(data)}`)
-
-      const normalizedOption = this.resolveOption(data)
-      if (!normalizedOption) {
-        this.logger.warn("Attempted to use an unknown SF Express fulfillment option.")
-        return false
-      }
-
-      return Boolean(normalizedOption)
-    } catch (error) {
-      this.logger.error(`Option validation error: ${error.message}`)
-      return false
-    }
+    return Boolean(this.resolveOption(data))
   }
 
+  // https://docs.medusajs.com/resources/references/fulfillment/provider#cancalculate
   async canCalculate(option: CreateShippingOptionDTO): Promise<boolean> {
-    try {
-      this.logger.info(`Checking if provider can calculate: ${JSON.stringify(option)}`)
-
-      if (option.price_type !== "calculated") {
-        // Fixed price shipping options don't need calculation logic.
-        return true
-      }
-
-      const normalizedOption = this.resolveOption(option.data)
-      if (!normalizedOption) {
-        this.logger.warn("No SF Express option data found for calculated price.")
-        return false
-      }
-
-      const canCalculate = normalizedOption.supported_price_types.includes("calculated")
-      if (!canCalculate) {
-        this.logger.warn(`SF Express option ${normalizedOption.id} does not support calculated pricing.`)
-      }
-
-      return canCalculate
-    } catch (error) {
-      this.logger.error(`Can calculate check error: ${error.message}`)
-      return false
-    }
+    return true
   }
 
+  // https://docs.medusajs.com/resources/references/fulfillment/provider#calculateprice
   async calculatePrice(
     optionData: CalculateShippingOptionPriceDTO["optionData"],
-    data: CalculateShippingOptionPriceDTO["data"],
+    _data: CalculateShippingOptionPriceDTO["data"],
     context: CalculateShippingOptionPriceContext
   ): Promise<CalculatedShippingOptionPrice> {
+    const normalizedOption = this.resolveOption(optionData.data)
+    if (!normalizedOption?.businessType) {
+      throw new MedusaError(MedusaError.Types.INVALID_DATA, "Missing SF-Express business type for price calculation")
+    }
     try {
-      this.logger.info(`Calculating price for: ${JSON.stringify({ optionData, data })}`)
+      const deliverPayload = this.buildDeliverQueryPayload(normalizedOption.businessType, context)
+      const response = await this.client.post("EXP_RECE_QUERY_DELIVERTM", deliverPayload)
+      const amount = this.extractFee(response)
 
-      const normalizedOption = this.resolveOption(optionData)
-      if (!normalizedOption) {
-        throw new Error("Missing SF Express option data for price calculation.")
-      }
-      const currencyCode = (
-        (
-          context as
-            | {
-                currency_code?: string
-              }
-            | undefined
-        )?.currency_code ?? "usd"
-      ).toLowerCase()
-      const rateConfig = this.resolveRateConfig(normalizedOption, currencyCode)
-      const quantity = this.getTotalItemQuantity(context?.items)
-
-      let calculatedAmount =
-        rateConfig.base_amount +
-        Math.max(quantity - 1, 0) * (rateConfig.per_item_rate ?? 0)
-
-      if (normalizedOption.type === "express") {
-        // Express services get an additional handling fee.
-        calculatedAmount += Math.round(calculatedAmount * 0.15)
-      }
-
-      calculatedAmount += this.resolveInternationalSurcharge(
-        rateConfig,
-        context?.shipping_address?.country_code
-      )
-      calculatedAmount += this.getRemoteAreaSurcharge(
-        rateConfig,
-        context?.shipping_address?.country_code
-      )
-
-      if (rateConfig.min_amount) {
-        calculatedAmount = Math.max(calculatedAmount, rateConfig.min_amount)
-      }
-
-      const result = {
-        calculated_amount: calculatedAmount,
-        is_calculated_price_tax_inclusive: rateConfig.tax_inclusive ?? false,
-      }
-
-      this.logger.info(`Price calculated: ${JSON.stringify(result)}`)
-      return result
-    } catch (error) {
-      this.logger.error(`Price calculation error: ${error.message}`)
-      // Return a default price instead of throwing to prevent checkout failure
       return {
-        calculated_amount: 500,
+        calculated_amount: amount ?? 0,
+        is_calculated_price_tax_inclusive: false,
+      }
+    } catch (error) {
+      this.logger.error(`SF-Express calculatePrice failed: ${(error as Error)?.message}`)
+      return {
+        calculated_amount: 0,
         is_calculated_price_tax_inclusive: false,
       }
     }
   }
 
+  /*
+  *Reference URL: https://docs.medusajs.com/resources/references/fulfillment/createFulfillment
+  */
   async createFulfillment(
     data: Record<string, unknown>,
     items: Partial<Omit<FulfillmentItemDTO, "fulfillment">>[],
     order: Partial<FulfillmentOrderDTO> | undefined,
     fulfillment: Partial<FulfillmentDTO>
   ): Promise<any> {
-    // Create fulfillment with your provider
-    this.logger.info(`Creating fulfillment: ${JSON.stringify({ data, items, order })}`)
-    
-    // Here you would integrate with your fulfillment provider's API
-    // For now, return a mock response
+    // Shipping label creation is not covered by provided docs; store metadata for tracking.
+    this.logger.info(`SF-Express createFulfillment invoked with ${items.length} items.`)
     return {
-      id: `custom_${Date.now()}`,
-      tracking_number: `TRACK${Math.random().toString(36).substr(2, 9).toUpperCase()}`,
-      status: "pending",
+      data: {
+        ...data,
+        order_reference: order?.id,
+        fulfillment_id: fulfillment.id,
+      },
     }
   }
 
+  /*
+  *Reference URL: https://docs.medusajs.com/resources/references/fulfillment/cancelFulfillment
+  */
   async cancelFulfillment(fulfillment: Record<string, unknown>): Promise<any> {
-    // Cancel fulfillment with your provider
-    this.logger.info(`Canceling fulfillment: ${JSON.stringify(fulfillment)}`)
-    
-    return {
-      id: fulfillment.id,
-      status: "canceled",
+    this.logger.info("SF-Express cancelFulfillment called; no remote action implemented.")
+    return { id: fulfillment.id, canceled: true }
+  }
+
+  async createReturnFulfillment(fulfillment: Record<string, unknown>): Promise<any> {
+    this.logger.info("SF-Express createReturnFulfillment called; passthrough only.")
+    return { data: fulfillment }
+  }
+
+  async getFulfillmentDocuments(
+    data: Record<string, unknown>
+  ): Promise<any> {
+    // assuming you contact a client to
+    // retrieve the document
+    return []
+  }
+
+  async getReturnDocuments(
+    data: Record<string, unknown>
+  ): Promise<any> {
+    // assuming you contact a client to
+    // retrieve the document
+    return []
+  }
+
+  async getShipmentDocuments(
+    data: Record<string, unknown>
+  ): Promise<any> {
+    // assuming you contact a client to
+    // retrieve the document
+    return []
+  }
+
+  async retrieveDocuments(
+    fulfillmentData: Record<string, unknown>,
+    documentType: "invoice" | "label"
+  ): Promise<any> {
+    return
+  }
+
+  /* Helpers */
+
+  protected resolveOption(data: any): NormalizedOption | null {
+    if (!data || typeof data !== "object") {
+      return null
     }
-  }
 
-  async createReturn(returnOrder: any): Promise<any> {
-    // Handle return creation
-    this.logger.info(`Creating return: ${JSON.stringify(returnOrder)}`)
-    return {
-      id: `return_${Date.now()}`,
-      status: "pending",
-    }
-  }
+    const businessType = this.normalizeBusinessType(
+      data.businessType || data.business_type || data.productCode
+    )
 
-  async getFulfillmentDocuments(data: any): Promise<any> {
-    // Return fulfillment documents (labels, invoices, etc.)
-    return []
-  }
-
-  async getReturnDocuments(data: any): Promise<any> {
-    // Return return documents
-    return []
-  }
-
-  async getShipmentDocuments(data: any): Promise<any> {
-    // Return shipment documents
-    return []
-  }
-
-  async retrieveDocuments(fulfillmentData: any, documentType: string): Promise<any> {
-    // Retrieve specific documents
-    return []
-  }
-
-  protected async retrieveLogisticsProducts(): Promise<LogisticsProduct[]> {
-    if (this.productsCache && this.productsCache.expires_at > Date.now()) {
-      return this.productsCache.items
-    }
-
-    const payload: Record<string, unknown> = this.compactObject({
-      page_no: 1,
-      page_size: 200,
-      transport_mode: this.options_.default_transport_mode ?? "1",
-      source_country_code: this.options_.default_origin_country,
-      source_warehouse_code: this.options_.default_warehouse_code,
-      dest_country_code: this.options_.default_destination_country,
-    })
-
-    try {
-      const response = await this.client.post(
-        "ds.xms.logistics_product.getlist",
-        payload
-      )
-
-      this.debug(
-        "[4PX] logistics_product.getlist raw response:",
-        JSON.stringify(response)
-      )
-
-      const list = this.extractList(response?.data ?? response)
-      this.productsCache = {
-        items: list,
-        expires_at: Date.now() + 5 * 60 * 1000,
+    if (this.options.debug)
+    {
+      if (businessType == "1") {
+        this.logger.warn(`SF-Express business type: 顺丰速运`)
       }
-      return list
-    } catch (error) {
-      this.logger_.error(
-        `Failed to load 4PX logistics products: ${
-          (error as Error)?.message ?? error
-        }`
-      )
-      throw error
+
+      if (businessType == "2") {
+        this.logger.warn(`SF-Express business type: 顺丰陆运`)
+      }
+
+    }
+
+    const id = businessType || data.id
+    if (!id) {
+      return null
+    }
+    return {
+      id,
+      name: data.name || data.productName || "SF Express",
+      businessType,
+      raw: data,
     }
   }
 
+  protected buildDeliverQueryPayload(
+    businessType: string,
+    context: CalculateShippingOptionPriceContext
+  ): Record<string, unknown> {
+    const weight = this.getTotalWeight(context?.items)
+    const consignedTime = this.options.default_send_time ?? this.formatDateTime(new Date())
+    const destAddress = this.resolveAddressFromContext(context)
+    const srcAddress: ShippingAddressPayload = {
+      province: this.options.default_src_province,
+      city: this.options.default_src_city,
+      district: this.options.default_src_district,
+      address: this.options.default_src_address,
+    }
 
-  protected getTotalItemQuantity(
-    items: CalculateShippingOptionPriceContext["items"] | undefined
-  ): number {
+    return {
+      businessType,
+      searchPrice: "1",
+      consignedTime,
+      weight,
+      srcAddress,
+      destAddress,
+    }
+  }
+
+  protected resolveAddressFromContext(context: CalculateShippingOptionPriceContext): ShippingAddressPayload {
+    const addr = context?.shipping_address ?? {}
+    const province = (addr as any).province ?? (addr as any).region ?? this.options.default_dest_province
+    const city = (addr as any).city ?? this.options.default_dest_city
+    const district =
+      (addr as any).metadata?.district ??
+      (addr as any).county ??
+      (addr as any).address_2 ??
+      this.options.default_dest_district
+    const address =
+      (addr as any).address_1 ??
+      (addr as any).address ??
+      this.options.default_dest_address ??
+      (addr as any).address_2
+
+    return {
+      province,
+      city,
+      district,
+      address,
+    }
+  }
+
+  protected extractFee(response: SFExpressResponse): number | undefined {
+    const data = response.apiResultData
+    const deliverList = data?.msgData?.deliverTmDto ?? data?.deliverTmDto ?? []
+    const first = Array.isArray(deliverList) ? deliverList[0] : undefined
+    if (!first) {
+      return undefined
+    }
+    const fee = Number(first.fee)
+    return Number.isFinite(fee) ? fee : undefined
+  }
+
+  protected getTotalWeight(items: CalculateShippingOptionPriceContext["items"] | undefined): number {
     if (!items?.length) {
       return 1
     }
 
-    const total = items.reduce((sum, item) => {
-      const quantityValue = Number(item.quantity ?? 0)
-      return sum + (Number.isFinite(quantityValue) ? quantityValue : 0)
+    let totalWeight = items.reduce((sum, item) => {
+      const quantity = Number(item.quantity ?? 0) || 0
+      const weightPerItem = Number((item as any).variant?.weight) || 0
+      return sum + quantity * weightPerItem
     }, 0)
-    return total > 0 ? total : 1
+
+    // Medusa stores weight in grams; SF-Express expects kilograms.
+    totalWeight = totalWeight / 1000
+    return totalWeight > 0 ? totalWeight : 1
   }
 
+  protected formatDateTime(date: Date): string {
+    const pad = (n: number) => `${n}`.padStart(2, "0")
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
+      date.getHours()
+    )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  }
+
+  protected normalizeBusinessType(value: any): string | undefined {
+    if (value === undefined || value === null) {
+      return undefined
+    }
+    const normalized = String(value).trim().toLowerCase()
+    switch (normalized) {
+      case "standard":
+      case "2":
+        return "2"
+      case "express":
+      case "1":
+        return "1"
+      case "next-morning":
+      case "5":
+        return "5"
+      case "same-day":
+      case "6":
+        return "6"
+      default:
+        return String(value)
+    }
+  }
 }
 
 export default SFExpressFulfillmentProviderService
