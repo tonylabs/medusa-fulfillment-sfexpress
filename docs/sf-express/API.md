@@ -75,6 +75,89 @@ curl --request POST \
 
 ---
 
+## OAuth2 Authentication
+
+The accessToken is valid for only two hours, and users must manage it by periodically retrieving a new token to avoid interface call failures.
+
+Within the two-hour period, calls to this interface will return the same token; after two hours, the interface will return a new token.
+
+### Request URL
+
+| Environment     | URL                                                       |
+|-----------------|-----------------------------------------------------------|
+| Production      | https://sfapi.sf-express.com/oauth2/accessToken          |
+| Sandbox         | https://sfapi-sbox.sf-express.com/oauth2/accessToken     |
+
+### Communication Protocol & Message Format
+
+- Both parties use the **HTTP POST** method for communication.  
+- The request header must include: `Content-Type: application/x-www-form-urlencoded;charset=UTF-8`
+- Character encoding must be **UTF-8**.
+
+### Parameter Description
+
+| Parameter   | Type        | Required | Description                                                   |
+|-------------|-------------|----------|---------------------------------------------------------------|
+| partnerID   | String(64)  | Y        | Customer code (i.e., partner code `CustomerCode`)            |
+| secret      | String(50)  | Y        | Verification code (i.e., partner secret `checkWord`)         |
+| grantType   | String(50)  | Y        | Grant type, set to `password`                                |
+
+### Response Parameters
+
+| Parameter Name | Type        | Required | Description                                                                                     |
+|----------------|-------------|----------|-------------------------------------------------------------------------------------------------|
+| apiResponseID  | String(40)  | Y        | Response ID                                                                                     |
+| apiResultCode  | String(10)  | Y        | Response code                                                                                   |
+| apiErrorMsg    | String(200) | N        | Error description                                                                               |
+| accessToken    | String(100) | Y        | Access token                                                                                    |
+| expiresIn      | Number      | Y        | Token expiration time in seconds (default: 7200). Countdown starts after successful retrieval. Once it reaches 0, a new token must be obtained. |
+
+### OAuth2 Authentication Response Codes
+
+| Response Code | Message                     | Description                           |
+|---------------|-----------------------------|---------------------------------------|
+| A1000         | success                     | Success                               |
+| A1011         | auth_error:${REASON}        | Authentication failed: ${Reason}      |
+
+### Request Examples
+
+#### cURL Request Example
+
+```bash
+curl --request POST \
+  --url https://sfapi.sf-express.com/oauth2/accessToken \
+  --header 'content-type: application/x-www-form-urlencoded' \
+  --data partnerID=yourclientcode \
+  --data secret=yourcheckword \
+  --data grantType=password
+```  
+
+#### Success Response
+
+```json
+{
+    "apiResultCode": "A1000",
+    "apiErrorMsg": "success",
+    "apiResponseID": "000180E0AC18933F963C52701B18C03F",
+    "accessToken": "20D02FC4F63B4A4AA7C9A236EAD5B0A1",
+    "expiresIn": 5150
+}
+```
+
+#### Failed Response
+
+```json
+{
+    "apiResultCode": "A1011",
+    "apiErrorMsg": "auth_error:partnerID:test010d_is_not_exist",
+    "apiResponseID": "8VYUxU2eL9ZgBXtGXrj",
+    "accessToken": null,
+    "expiresIn": null
+}
+```
+
+---
+
 ## Signature Sign
 
 The `msgDigest` is a digital signature used for request authentication, ensuring data integrity and verifying the identity of the caller.
@@ -98,6 +181,7 @@ The final data to be sent is:
 - msgData = {"language": "zh-CN", "orderId": "QIAO-20200618-004"}
 - msgDigest = IIKJtuLVzoFTu4kHI8M8vA==
 
+The final data being sent is: `msgData={"language": "zh-CN", "orderId": "QIAO-20200618-004"}&msgDigest=IIKJtuLVzoFTu4kHI8M8vA==`, please note that the URL parameter separator is the ampersand (&).
 
 #### Java Example Code:
 
