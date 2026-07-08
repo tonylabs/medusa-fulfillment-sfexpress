@@ -116,18 +116,27 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
     try {
       const deliverPayload = this.buildDeliverQueryPayload(normalizedOption.businessType, context)
       const response = await this.client.post("EXP_RECE_QUERY_DELIVERTM", deliverPayload)
-      const amount = this.extractFee(response)
+      const amount = this.extractFee(response, normalizedOption.businessType)
+
+      // Never fall back to 0: a missing/unmatched fee means SF-Express cannot
+      // price this service for the route. Throw so the shipping option is
+      // hidden at checkout instead of being shown as free.
+      if (amount == null) {
+        throw new MedusaError(
+          MedusaError.Types.NOT_FOUND,
+          `SF-Express returned no price for business type ${normalizedOption.businessType}`
+        )
+      }
 
       return {
-        calculated_amount: amount ?? 0,
+        calculated_amount: amount,
         is_calculated_price_tax_inclusive: false,
       }
     } catch (error) {
+      // Log, then re-throw: the caller (store /shipping-options/:id/calculate)
+      // surfaces the failure so the storefront can drop the option.
       this.logger.error(`SF-Express calculatePrice failed: ${(error as Error)?.message}`)
-      return {
-        calculated_amount: 0,
-        is_calculated_price_tax_inclusive: false,
-      }
+      throw error
     }
   }
 
@@ -277,14 +286,29 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
     }
   }
 
-  protected extractFee(response: SFExpressResponse): number | undefined {
+  protected extractFee(response: SFExpressResponse, businessType?: string): number | undefined {
     const data = response.apiResultData
     const deliverList = data?.msgData?.deliverTmDto ?? data?.deliverTmDto ?? []
-    const first = Array.isArray(deliverList) ? deliverList[0] : undefined
-    if (!first) {
+    const list = Array.isArray(deliverList) ? deliverList : []
+
+    // SF may return an entry per product; pick the one matching the requested
+    // business type rather than blindly taking the first (which could be a
+    // different, cheaper — or zero-priced — service).
+    const entry = businessType
+      ? list.find((e) => String(e?.businessType) === String(businessType))
+      : list[0]
+
+    if (!entry) {
+      if (this.options.debug) {
+        this.logger.warn(
+          `SF-Express: no deliverTmDto entry for business type ${businessType} (got ${list
+            .map((e) => e?.businessType)
+            .join(",") || "none"})`
+        )
+      }
       return undefined
     }
-    const fee = Number(first.fee)
+    const fee = Number(entry.fee)
     return Number.isFinite(fee) ? fee : undefined
   }
 
