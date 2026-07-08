@@ -44,6 +44,7 @@ yarn add @gerbergpt/medusa-fulfillment-sfexpress
 ```
 
 ## Configuration
+
 Add the provider module in your `medusa-config.ts` file:
 
 ```typescript
@@ -83,6 +84,7 @@ module.exports = defineConfig({
 ```
 
 ## Environment Variables
+
 Create or update your `.env` file with the following variables:
 
 ```bash
@@ -107,3 +109,76 @@ DEFAULT_PAYMENT_TERMS=1
 
 ### Authentication
 This plugin now authenticates with SF-Express using the OAuth2 token flow described in `docs/sf-express/API.md`. The provider exchanges `partner_id` and the environment-specific `secret` for an `accessToken`, caches it for its two-hour lifetime, and attaches it to all API calls. No message-digest signatures are required.
+
+
+---
+
+## Development
+
+1. Install Yarn
+
+```bash
+npm i -g yarn
+```
+
+2. Publish Alipay payment locally via yalc:
+
+```bash
+cd medusa-fulfillment-sfexpress
+yarn install
+npx medusa plugin:publish
+```
+
+3. Navigate to your Medusa backend application and install the plugin:
+
+```bash
+npx medusa plugin:add @gerbergpt/medusa-fulfillment-sfexpress
+```
+After installation, you should see an entry pointing to the local yalc package:
+
+```json
+"dependencies": {
+  ...,
+  "@gerbergpt/medusa-fulfillment-sfexpress": "file:.yalc/@gerbergpt/medusa-fulfillment-sfexpress",
+  ...
+}
+```
+
+4. Configure your Medusa application (backend)
+
+```typescript
+module.exports = defineConfig({
+  modules: [
+    {
+      key: Modules.FULFILLMENT,
+      resolve: "@medusajs/fulfillment",
+      options: {
+        providers: [
+          {
+            id: "sf-express",
+            resolve: "@gerbergpt/medusa-fulfillment-sfexpress/providers",
+            options: {
+              sandbox: process.env.SFEXPRESS_ENV === "prod",
+              partner_id: process.env.SFEXPRESS_PARTNER_ID,
+              secret_sandbox: process.env.SFEXPRESS_SECRET_SANDBOX,
+              secret_production: process.env.SFEXPRESS_SECRET_PRODUCTION,
+              debug: false,
+              default_src_province: "Shanghai",
+              default_src_city: "Shanghai",
+              default_src_district: "Jingan District",
+              default_src_address: "No.666 Shenchang Road",
+              default_payment_terms: "1"
+            },
+          },
+        ],
+      },
+    },
+  ],
+})
+```
+
+5. If you need to move the local npm package bridged by `yalc`, just run:
+
+```bash
+npx yalc remove @gerbergpt/medusa-fulfillment-sfexpress
+```

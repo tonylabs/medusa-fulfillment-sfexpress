@@ -1,6 +1,6 @@
 {
   "name": "@gerbergpt/medusa-fulfillment-sfexpress",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": "Medusa v2 Fulfillment SF-Express Plugin",
   "description": "SF-Express fulfillment service for Medusa V2",
   "author": "TONYLABS <tony.wang@tonylabs.com>",
@@ -20,7 +20,12 @@
     "./providers/*": "./.medusa/server/src/providers/*/index.js",
     "./providers": "./.medusa/server/src/providers/index.js",
     "./subscribers/*": "./.medusa/server/src/subscribers/*.js",
-    "./*": "./.medusa/server/src/*.js"
+    "./*": "./.medusa/server/src/*.js",
+    "./admin": {
+      "import": "./.medusa/server/src/admin/index.mjs",
+      "require": "./.medusa/server/src/admin/index.js",
+      "default": "./.medusa/server/src/admin/index.js"
+    }
   },
   "keywords": [
     "medusa",
@@ -31,7 +36,6 @@
   "scripts": {
     "dev": "medusa plugin:develop",
     "build": "medusa plugin:build",
-    "publish": "medusa plugin:publish",
     "push": "medusa plugin:build && yalc push"
   },
   "devDependencies": {
