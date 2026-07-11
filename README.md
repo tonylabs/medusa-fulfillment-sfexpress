@@ -67,10 +67,9 @@ module.exports = defineConfig({
               partner_id: process.env.SFEXPRESS_PARTNER_ID,
               secret_sandbox: process.env.SFEXPRESS_SECRET_SANDBOX,
               secret_production: process.env.SFEXPRESS_SECRET_PRODUCTION,
-              // Defaults used for SF-Express product recommendation and transit-time pricing
-              default_src_province: "Guangdong Province",
-              default_src_city: "Shenzhen City",
-              default_src_address: "Nanshan District",
+              // Origin ("ship from") is taken from the Medusa stock location that
+              // fulfils the shipping option (Settings → Locations & Shipping),
+              // not from static options. Only destination fallbacks remain.
               default_dest_province: "Guangdong Province",
               default_dest_city: "Guangzhou City",
               default_payment_terms: "1", // 1: Sender Pay; 2: Receiver Pay; 3: Sender Third-Party; 4: Receiver Third-Party
@@ -92,9 +91,6 @@ SFEXPRESS_ENV=sandbox | production
 SFEXPRESS_PARTNER_ID=
 SFEXPRESS_SECRET_SANDBOX=
 SFEXPRESS_SECRET_PRODUCTION=
-DEFAULT_SRC_PROVINCE=
-DEFAULT_SRC_CITY=
-DEFAULT_SRC_ADDRESS=
 DEFAULT_DEST_PROVINCE=
 DEFAULT_DEST_CITY=
 DEFAULT_PAYMENT_TERMS=1
@@ -104,7 +100,8 @@ DEFAULT_PAYMENT_TERMS=1
 - `partner_id` (**required**) – SF-Express partner/customer code.
 - `secret_sandbox` / `secret_production` (**required**) – SF-Express checkword for the corresponding environment. Used to retrieve OAuth2 access tokens.
 - `sandbox` – Use sandbox gateway when `true`.
-- `default_src_*` / `default_dest_*` – Default origin/destination address fragments used for product recommendation and transit-time queries when checkout data is incomplete.
+- Origin address – taken automatically from the Medusa **stock location** that fulfils the shipping option (Settings → Locations & Shipping) via `context.from_location`; there is no static origin option. Put the district (区) in the location's `address_2` if needed.
+- `default_dest_*` – Destination fallbacks used when the customer's checkout address is incomplete.
 - `default_payment_terms` – One of `1 | 2 | 3 | 4` (see SF docs). Defaults to `1`.
 
 ### Authentication
@@ -163,10 +160,7 @@ module.exports = defineConfig({
               secret_sandbox: process.env.SFEXPRESS_SECRET_SANDBOX,
               secret_production: process.env.SFEXPRESS_SECRET_PRODUCTION,
               debug: false,
-              default_src_province: "Shanghai",
-              default_src_city: "Shanghai",
-              default_src_district: "Jingan District",
-              default_src_address: "No.666 Shenchang Road",
+              // Origin comes from the fulfilling stock location's address.
               default_payment_terms: "1"
             },
           },

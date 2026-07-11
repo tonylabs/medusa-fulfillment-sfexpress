@@ -26,10 +26,6 @@ export type Options = {
   sandbox?: boolean
   debug?: boolean
   timeout?: number
-  default_src_province?: string
-  default_src_city?: string
-  default_src_district?: string
-  default_src_address?: string
   default_dest_province?: string
   default_dest_city?: string
   default_dest_district?: string
@@ -246,12 +242,7 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
     const weight = this.getTotalWeight(context?.items)
     const consignedTime = this.options.default_send_time ?? this.formatDateTime(new Date())
     const destAddress = this.resolveAddressFromContext(context)
-    const srcAddress: ShippingAddressPayload = {
-      province: this.options.default_src_province,
-      city: this.options.default_src_city,
-      district: this.options.default_src_district,
-      address: this.options.default_src_address,
-    }
+    const srcAddress = this.resolveSrcAddressFromLocation(context)
 
     return {
       businessType,
@@ -260,6 +251,30 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
       weight,
       srcAddress,
       destAddress,
+    }
+  }
+
+  // Origin ("ship from") comes from the Medusa stock location that fulfils this
+  // shipping option — the address set under Settings → Locations & Shipping.
+  // Medusa passes it as context.from_location. No static default is used.
+  protected resolveSrcAddressFromLocation(
+    context: CalculateShippingOptionPriceContext
+  ): ShippingAddressPayload {
+    const address = (context as any)?.from_location?.address
+    if (!address?.province || !address?.city) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "SF-Express: the shipping origin has no address. Set the stock location's " +
+          "address (at least province and city) under Settings → Locations & Shipping."
+      )
+    }
+    return {
+      province: address.province,
+      city: address.city,
+      // Medusa addresses have no dedicated district (区) field; admins can put
+      // it in address_2. Falls back to undefined so SF prices by province/city.
+      district: address.address_2 ?? undefined,
+      address: address.address_1,
     }
   }
 

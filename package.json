@@ -1,6 +1,6 @@
 {
   "name": "@gerbergpt/medusa-fulfillment-sfexpress",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "displayName": "Medusa v2 Fulfillment SF-Express Plugin",
   "description": "SF-Express fulfillment service for Medusa V2",
   "author": "TONYLABS <tony.wang@tonylabs.com>",

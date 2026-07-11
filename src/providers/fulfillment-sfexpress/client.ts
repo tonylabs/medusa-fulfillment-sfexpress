@@ -92,8 +92,10 @@ export class Client {
     }
   }
 
-  async getRecommendProduct(): Promise<ProductRecommendation[]> {
-    const payload = this.buildProductRecommendPayload()
+  async getRecommendProduct(
+    src: { province?: string; city?: string; district?: string; address?: string }
+  ): Promise<ProductRecommendation[]> {
+    const payload = this.buildProductRecommendPayload(src)
     const response = await this.post("EXP_RECE_PSDS_PRODUCT_RECOMMEND", payload)
     const data = response.apiResultData
     const list =
@@ -243,13 +245,17 @@ export class Client {
     }
   }
 
-  protected buildProductRecommendPayload(): Record<string, unknown> {
+  protected buildProductRecommendPayload(
+    src: { province?: string; city?: string; district?: string; address?: string }
+  ): Record<string, unknown> {
     const now = new Date()
     const sendTime = this.options.default_send_time ?? this.formatDateTime(now)
 
+    // Origin is supplied by the caller (from the Medusa stock location); it is
+    // no longer read from static provider options.
     const required = [
-      this.options.default_src_province,
-      this.options.default_src_city,
+      src?.province,
+      src?.city,
       this.options.default_dest_province,
       this.options.default_dest_city,
       this.options.default_payment_terms,
@@ -258,21 +264,21 @@ export class Client {
     if (required.some((val) => !val)) {
       throw new MedusaError(
         MedusaError.Types.INVALID_DATA,
-        "Missing required SF-Express defaults for product recommendations (source/destination/payment terms).",
+        "Missing required SF-Express fields for product recommendations (source/destination/payment terms).",
       )
     }
 
     return {
-      srcProvince: this.options.default_src_province,
-      srcCity: this.options.default_src_city,
-      srcCounty: this.options.default_src_district,
+      srcProvince: src.province,
+      srcCity: src.city,
+      srcCounty: src.district,
       destProvince: this.options.default_dest_province,
       destCity: this.options.default_dest_city,
       destCounty: this.options.default_dest_district,
       sendTime,
       weight: 1,
       paymentTerms: this.options.default_payment_terms,
-      srcAddress: this.options.default_src_address,
+      srcAddress: src.address,
       destAddress: this.options.default_dest_address,
     }
   }
