@@ -1,0 +1,55 @@
+name: Publish to npm
+
+# Publishes @gerbergpt/medusa-fulfillment-sfexpress to npm using
+# Trusted Publishing (GitHub Actions OIDC) — no NPM_TOKEN / secret required.
+#
+# One-time setup on npmjs.com (package → Settings → Trusted Publisher):
+#   - Publisher:  GitHub Actions
+#   - Repository: tonylabs/medusa-fulfillment-sfexpress
+#   - Workflow filename: publish.yml
+#   - Environment: (leave blank, unless you set one below)
+#
+# Then either publish a GitHub Release, or run this workflow manually
+# (Actions tab → "Publish to npm" → Run workflow). npm publishes the version
+# currently in package.json, so bump it before releasing.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for npm Trusted Publishing (OIDC)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Must match the "environment" you enter in npm's Trusted Publisher config.
+    # Create it under GitHub repo Settings → Environments (add required
+    # reviewers there for extra protection if you like).
+    environment: npm-publish
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Enable Corepack (Yarn 4)
+        run: corepack enable
+
+      - name: Update npm (Trusted Publishing requires npm >= 11.5.1)
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build plugin
+        run: yarn build
+
+      - name: Publish to npm
+        run: npm publish
