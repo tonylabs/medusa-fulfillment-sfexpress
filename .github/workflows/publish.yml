@@ -7,7 +7,7 @@ name: Publish to npm
 #   - Publisher:  GitHub Actions
 #   - Repository: tonylabs/medusa-fulfillment-sfexpress
 #   - Workflow filename: publish.yml
-#   - Environment: (leave blank, unless you set one below)
+#   - Environment: (leave blank)
 #
 # Then either publish a GitHub Release, or run this workflow manually
 # (Actions tab → "Publish to npm" → Run workflow). npm publishes the version
@@ -25,10 +25,6 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # Must match the "environment" you enter in npm's Trusted Publisher config.
-    # Create it under GitHub repo Settings → Environments (add required
-    # reviewers there for extra protection if you like).
-    environment: npm-publish
     steps:
       - name: Checkout
         uses: actions/checkout@v4
