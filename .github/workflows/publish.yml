@@ -9,14 +9,14 @@ name: Publish to npm
 #   - Workflow filename: publish.yml
 #   - Environment: (leave blank)
 #
-# Then either publish a GitHub Release, or run this workflow manually
-# (Actions tab → "Publish to npm" → Run workflow). npm publishes the version
-# currently in package.json, so bump it before releasing.
+# Runs automatically only when a GitHub Release is published. A release always
+# carries a version tag; the tag must match package.json's version (e.g. tag
+# "v1.2.0" for version "1.2.0"), enforced below. So: bump the version, then
+# create a release on the matching tag.
 
 on:
   release:
     types: [published]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -34,6 +34,16 @@ jobs:
         with:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
+
+      - name: Verify release tag matches package version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "v$VERSION" ] && [ "$TAG" != "$VERSION" ]; then
+            echo "::error::Release tag '$TAG' does not match package.json version '$VERSION'. Tag the release 'v$VERSION'."
+            exit 1
+          fi
+          echo "Publishing $VERSION (tag $TAG)"
 
       - name: Enable Corepack (Yarn 4)
         run: corepack enable
