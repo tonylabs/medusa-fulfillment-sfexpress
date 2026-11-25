@@ -13,7 +13,8 @@ import {
 import { MedusaError } from "@medusajs/framework/utils"
 
 import { Client } from "./client"
-import { SFExpressResponse } from "./types"
+import { SFExpressResponse, RecommendationRoute } from "./types"
+import { formatSFDateTime } from "./utils"
 
 type InjectedDependencies = {
   logger: Logger
@@ -32,6 +33,9 @@ export type Options = {
   default_dest_address?: string
   default_payment_terms?: string
   default_send_time?: string
+  monthly_card?: string
+  default_item_weight_grams?: number
+  product_recommendation?: RecommendationRoute
 }
 
 type ShippingAddressPayload = {
@@ -58,27 +62,35 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
   constructor({ logger }: InjectedDependencies, options: Options) {
     super()
     this.logger = logger
-    this.options = options
-    this.client = new Client(options)
+    this.options = { default_payment_terms: "1", default_item_weight_grams: 1000, ...options }
+    if (!Number.isFinite(this.options.default_item_weight_grams) || this.options.default_item_weight_grams! <= 0) {
+      throw new MedusaError(MedusaError.Types.INVALID_DATA, "SF-Express default_item_weight_grams must be positive")
+    }
+    this.client = new Client(this.options)
   }
 
   //https://docs.medusajs.com/resources/references/fulfillment/provider#getfulfillmentoptions
   async getFulfillmentOptions(): Promise<FulfillmentOption[]> {
+    if (this.options.product_recommendation) {
+      const products = await this.client.getRecommendProduct(this.options.product_recommendation)
+      return products.flatMap((product) => {
+        const businessType = this.normalizeBusinessType(product.businessType ?? product.productCode)
+        if (!businessType) return []
+        return [{
+          id: businessType === "2" ? "sf-standard" : businessType === "1" ? "sf-express" : `sf-${businessType}`,
+          name: product.productName || `SF Express ${businessType}`,
+          businessType,
+          data: { businessType },
+        }]
+      })
+    }
+
+    // Medusa's admin catalog call has no stock-location or customer context.
+    // A configured representative route enables SF product discovery; otherwise
+    // expose the two stable options used by existing shipping configurations.
     return [
-      {
-        id: "sf-standard",
-        name: "顺丰标准",
-        data: {
-          businessType: "standard",
-        },
-      },
-      {
-        id: "sf-express",
-        name: "顺丰特快",
-        data: {
-          businessType: "express",
-        },
-      },
+      { id: "sf-standard", name: "顺丰标准", businessType: "2", data: { businessType: "2" } },
+      { id: "sf-express", name: "顺丰特快", businessType: "1", data: { businessType: "1" } },
     ]
   }
 
@@ -87,7 +99,7 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
     if (!normalized) {
       throw new MedusaError(MedusaError.Types.INVALID_DATA, "Unknown SF-Express fulfillment option")
     }
-    return data ?? {}
+    return { ...data, businessType: normalized.businessType }
   }
 
   async validateOption(data: any): Promise<boolean> {
@@ -96,7 +108,7 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
 
   // https://docs.medusajs.com/resources/references/fulfillment/provider#cancalculate
   async canCalculate(option: CreateShippingOptionDTO): Promise<boolean> {
-    return true
+    return Boolean(this.resolveOption(option.data))
   }
 
   // https://docs.medusajs.com/resources/references/fulfillment/provider#calculateprice
@@ -105,7 +117,16 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
     _data: CalculateShippingOptionPriceDTO["data"],
     context: CalculateShippingOptionPriceContext
   ): Promise<CalculatedShippingOptionPrice> {
-    const normalizedOption = this.resolveOption(optionData.data)
+    // SF's domestic rate API returns CNY, without an FX conversion contract.
+    // Never silently charge the same numeric amount in USD or another currency.
+    if (String(context.currency_code).toLowerCase() !== "cny") {
+      throw new MedusaError(MedusaError.Types.INVALID_DATA, "SF-Express calculated rates require a CNY cart; use flat prices for other currencies")
+    }
+    const countries = [context.shipping_address?.country_code, context.from_location?.address?.country_code]
+    if (countries.some((country) => country && country.toLowerCase() !== "cn")) {
+      throw new MedusaError(MedusaError.Types.INVALID_DATA, "SF-Express calculated rates currently support mainland China routes only")
+    }
+    const normalizedOption = this.resolveOption(optionData)
     if (!normalizedOption?.businessType) {
       throw new MedusaError(MedusaError.Types.INVALID_DATA, "Missing SF-Express business type for price calculation")
     }
@@ -146,13 +167,15 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
     fulfillment: Partial<FulfillmentDTO>
   ): Promise<any> {
     // Shipping label creation is not covered by provided docs; store metadata for tracking.
-    this.logger.info(`SF-Express createFulfillment invoked with ${items.length} items.`)
+    this.logger.info(`SF-Express manual fulfillment recorded for ${items.length} items; book the carrier shipment separately.`)
     return {
       data: {
         ...data,
         order_reference: order?.id,
         fulfillment_id: fulfillment.id,
+        booking_status: "manual",
       },
+      labels: [],
     }
   }
 
@@ -207,26 +230,15 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
       return null
     }
 
+    const nested = data.data && typeof data.data === "object" ? data.data : {}
+    const aliases: Record<string, string> = { "sf-standard": "2", "sf-express": "1" }
     const businessType = this.normalizeBusinessType(
-      data.businessType || data.business_type || data.productCode
+      data.businessType ?? data.business_type ?? data.productCode ??
+      nested.businessType ?? nested.business_type ?? nested.productCode ??
+      aliases[data.id] ?? (typeof data.id === "string" ? data.id.replace(/^sf-/, "") : data.id)
     )
-
-    if (this.options.debug)
-    {
-      if (businessType == "1") {
-        this.logger.warn(`SF-Express business type: 顺丰速运`)
-      }
-
-      if (businessType == "2") {
-        this.logger.warn(`SF-Express business type: 顺丰陆运`)
-      }
-
-    }
-
-    const id = businessType || data.id
-    if (!id) {
-      return null
-    }
+    if (!businessType) return null
+    const id = data.id || businessType
     return {
       id,
       name: data.name || data.productName || "SF Express",
@@ -240,7 +252,7 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
     context: CalculateShippingOptionPriceContext
   ): Record<string, unknown> {
     const weight = this.getTotalWeight(context?.items)
-    const consignedTime = this.options.default_send_time ?? this.formatDateTime(new Date())
+    const consignedTime = this.options.default_send_time ?? formatSFDateTime(new Date())
     const destAddress = this.resolveAddressFromContext(context)
     const srcAddress = this.resolveSrcAddressFromLocation(context)
 
@@ -249,6 +261,7 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
       searchPrice: "1",
       consignedTime,
       weight,
+      ...(this.options.monthly_card ? { monthlyCard: this.options.monthly_card } : {}),
       srcAddress,
       destAddress,
     }
@@ -261,7 +274,7 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
     context: CalculateShippingOptionPriceContext
   ): ShippingAddressPayload {
     const address = (context as any)?.from_location?.address
-    if (!address?.province || !address?.city) {
+    if (!address || (!address.address_1?.trim() && (!address.province?.trim() || !address.city?.trim()))) {
       throw new MedusaError(
         MedusaError.Types.INVALID_DATA,
         "SF-Express: the shipping origin has no address. Set the stock location's " +
@@ -273,15 +286,15 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
       city: address.city,
       // Medusa addresses have no dedicated district (区) field; admins can put
       // it in address_2. Falls back to undefined so SF prices by province/city.
-      district: address.address_2 ?? undefined,
+      district: (address.metadata as any)?.district || address.address_2 || undefined,
       address: address.address_1,
     }
   }
 
   protected resolveAddressFromContext(context: CalculateShippingOptionPriceContext): ShippingAddressPayload {
     const addr = context?.shipping_address ?? {}
-    const province = (addr as any).province ?? (addr as any).region ?? this.options.default_dest_province
-    const city = (addr as any).city ?? this.options.default_dest_city
+    const province = (addr as any).province || (addr as any).region || this.options.default_dest_province
+    const city = (addr as any).city || this.options.default_dest_city
     const district =
       (addr as any).metadata?.district ??
       (addr as any).county ??
@@ -293,12 +306,10 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
       this.options.default_dest_address ??
       (addr as any).address_2
 
-    return {
-      province,
-      city,
-      district,
-      address,
+    if (!province?.trim() || !city?.trim()) {
+      throw new MedusaError(MedusaError.Types.INVALID_DATA, "SF-Express requires a destination province and city")
     }
+    return { province, city, district, address }
   }
 
   protected extractFee(response: SFExpressResponse, businessType?: string): number | undefined {
@@ -323,8 +334,12 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
       }
       return undefined
     }
-    const fee = Number(entry.fee)
-    return Number.isFinite(fee) ? fee : undefined
+    // Number(null), Number("") and Number(false) are all zero. None is a quote.
+    const rawFee = entry.fee
+    if (typeof rawFee !== "number" && typeof rawFee !== "string") return undefined
+    if (typeof rawFee === "string" && !rawFee.trim()) return undefined
+    const fee = Number(rawFee)
+    return Number.isFinite(fee) && fee >= 0 ? fee : undefined
   }
 
   protected getTotalWeight(items: CalculateShippingOptionPriceContext["items"] | undefined): number {
@@ -332,22 +347,22 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
       return 1
     }
 
-    let totalWeight = items.reduce((sum, item) => {
-      const quantity = Number(item.quantity ?? 0) || 0
-      const weightPerItem = Number((item as any).variant?.weight) || 0
-      return sum + quantity * weightPerItem
+    const totalWeight = items.reduce((sum, item) => {
+      const quantity = Number(item.quantity)
+      if (!Number.isFinite(quantity) || quantity < 0) {
+        throw new MedusaError(MedusaError.Types.INVALID_DATA, "SF-Express item quantity must be non-negative")
+      }
+      const rawWeight = (item as any).variant?.weight || (item as any).product?.weight ||
+        (item as any).variant?.product?.weight
+      const weight = rawWeight == null || rawWeight === "" ? 0 : Number(rawWeight)
+      if (!Number.isFinite(weight) || weight < 0) {
+        throw new MedusaError(MedusaError.Types.INVALID_DATA, "SF-Express item weight must be non-negative grams")
+      }
+      // Apply a fallback per unweighed item, rather than dropping its weight
+      // whenever another product in the cart has a known weight.
+      return sum + quantity * (weight || this.options.default_item_weight_grams!)
     }, 0)
-
-    // Medusa stores weight in grams; SF-Express expects kilograms.
-    totalWeight = totalWeight / 1000
-    return totalWeight > 0 ? totalWeight : 1
-  }
-
-  protected formatDateTime(date: Date): string {
-    const pad = (n: number) => `${n}`.padStart(2, "0")
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
-      date.getHours()
-    )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+    return totalWeight > 0 ? Math.ceil(totalWeight) / 1000 : 1
   }
 
   protected normalizeBusinessType(value: any): string | undefined {
@@ -369,7 +384,7 @@ class SFExpressFulfillmentProviderService extends AbstractFulfillmentProviderSer
       case "6":
         return "6"
       default:
-        return String(value)
+        return /^\d+$/.test(normalized) && Number(normalized) > 0 ? String(Number(normalized)) : undefined
     }
   }
 }

@@ -54,6 +54,9 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
 
+      - name: Run offline regression tests
+        run: yarn test
+
       - name: Build plugin
         run: yarn build
 

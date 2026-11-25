@@ -13,3 +13,16 @@ export type ProductRecommendation = {
   fee?: number
   raw?: any
 }
+
+export type SFAddress = {
+  province: string
+  city: string
+  district?: string
+  address: string
+}
+
+export type RecommendationRoute = {
+  origin: SFAddress
+  destination: SFAddress
+  weight?: number
+}

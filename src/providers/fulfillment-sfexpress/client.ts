@@ -1,7 +1,8 @@
 import { randomUUID } from "crypto"
 import { MedusaError } from "@medusajs/framework/utils"
-import { Options } from "./service"
-import { ProductRecommendation, SFExpressResponse } from "./types"
+import type { Options } from "./service"
+import { ProductRecommendation, SFExpressResponse, RecommendationRoute } from "./types"
+import { formatSFDateTime } from "./utils"
 
 type RequestPayload = Record<string, unknown>
 
@@ -19,7 +20,7 @@ export class Client {
   protected tokenRequest?: Promise<string>
 
   constructor(options: Options = {}) {
-    this.options = { debug: false, ...(options ?? {}) }
+    this.options = { debug: false, default_payment_terms: "1", ...(options ?? {}) }
     this.baseUrl = this.options.sandbox ? SF_SANDBOX_URL : SF_PRODUCTION_URL
     this.timeout = this.options.timeout ?? 15000
   }
@@ -75,7 +76,7 @@ export class Client {
 
       if (this.options.debug) {
         // eslint-disable-next-line no-console
-        console.debug("[SF-Express] Response:", JSON.stringify(parsed, null, 2))
+        console.debug("[SF-Express] Response:", { serviceCode, apiResultCode: parsed.apiResultCode, apiResponseID: parsed.apiResponseID })
       }
 
       return parsed
@@ -93,9 +94,9 @@ export class Client {
   }
 
   async getRecommendProduct(
-    src: { province?: string; city?: string; district?: string; address?: string }
+    route: RecommendationRoute
   ): Promise<ProductRecommendation[]> {
-    const payload = this.buildProductRecommendPayload(src)
+    const payload = this.buildProductRecommendPayload(route)
     const response = await this.post("EXP_RECE_PSDS_PRODUCT_RECOMMEND", payload)
     const data = response.apiResultData
     const list =
@@ -103,7 +104,7 @@ export class Client {
       data?.msgData?.recommendList ??
       data?.msgData?.products ??
       data?.productList ??
-      []
+      (Array.isArray(data?.msgData) ? data.msgData : [])
 
     if (!Array.isArray(list)) {
       return []
@@ -131,7 +132,13 @@ export class Client {
       throw new MedusaError(MedusaError.Types.UNEXPECTED_STATE, `SF-Express error ${apiResultCode}: ${reason}`)
     }
 
-    if (resultData && typeof resultData === "object" && "success" in resultData && resultData.success === false) {
+    if (!resultData || typeof resultData !== "object" || Array.isArray(resultData)) {
+      throw new MedusaError(MedusaError.Types.UNEXPECTED_STATE, "SF-Express returned invalid business response data")
+    }
+    if (typeof resultData.msgData === "string") {
+      resultData.msgData = this.safeParseJSON(resultData.msgData)
+    }
+    if (resultData.success === false || resultData.success === "false") {
       const reason = resultData.errorMsg || resultData.msg || "SF-Express business call failed"
       throw new MedusaError(MedusaError.Types.UNEXPECTED_STATE, reason)
     }
@@ -156,10 +163,12 @@ export class Client {
 
     const tokenPromise = this.requestAccessToken()
     this.tokenRequest = tokenPromise
-    tokenPromise.finally(() => {
-      this.tokenRequest = undefined
-    })
-    return tokenPromise
+    try {
+      return await tokenPromise
+    } finally {
+      // Avoid an unobserved rejected promise from tokenPromise.finally().
+      if (this.tokenRequest === tokenPromise) this.tokenRequest = undefined
+    }
   }
 
   protected async requestAccessToken(): Promise<string> {
@@ -205,7 +214,7 @@ export class Client {
       const token = rawJson?.accessToken
       const expiresIn = Number(rawJson?.expiresIn ?? 7200)
 
-      if (apiResultCode !== "A1000" || !token) {
+      if (apiResultCode !== "A1000" || typeof token !== "string" || !token || !Number.isFinite(expiresIn) || expiresIn <= 0) {
         const reason = rawJson?.apiErrorMsg || "Unable to retrieve SF-Express access token"
         throw new MedusaError(MedusaError.Types.UNEXPECTED_STATE, `SF-Express auth error ${apiResultCode}: ${reason}`)
       }
@@ -245,48 +254,25 @@ export class Client {
     }
   }
 
-  protected buildProductRecommendPayload(
-    src: { province?: string; city?: string; district?: string; address?: string }
-  ): Record<string, unknown> {
-    const now = new Date()
-    const sendTime = this.options.default_send_time ?? this.formatDateTime(now)
-
-    // Origin is supplied by the caller (from the Medusa stock location); it is
-    // no longer read from static provider options.
-    const required = [
-      src?.province,
-      src?.city,
-      this.options.default_dest_province,
-      this.options.default_dest_city,
-      this.options.default_payment_terms,
-    ]
-
-    if (required.some((val) => !val)) {
-      throw new MedusaError(
-        MedusaError.Types.INVALID_DATA,
-        "Missing required SF-Express fields for product recommendations (source/destination/payment terms).",
-      )
+  protected buildProductRecommendPayload(route: RecommendationRoute): Record<string, unknown> {
+    const { origin, destination, weight = 1 } = route
+    const required = [origin?.province, origin?.city, origin?.address,
+      destination?.province, destination?.city, destination?.address]
+    if (required.some((value) => !value?.trim()) || !Number.isFinite(weight) || weight <= 0) {
+      throw new MedusaError(MedusaError.Types.INVALID_DATA,
+        "SF-Express product recommendations require complete origin/destination addresses and positive weight")
     }
-
+    if (!["1", "2", "3", "4"].includes(this.options.default_payment_terms!)) {
+      throw new MedusaError(MedusaError.Types.INVALID_DATA, "Invalid SF-Express payment terms")
+    }
     return {
-      srcProvince: src.province,
-      srcCity: src.city,
-      srcCounty: src.district,
-      destProvince: this.options.default_dest_province,
-      destCity: this.options.default_dest_city,
-      destCounty: this.options.default_dest_district,
-      sendTime,
-      weight: 1,
+      srcProvince: origin.province, srcCity: origin.city, srcCounty: origin.district,
+      srcAddress: origin.address, destProvince: destination.province,
+      destCity: destination.city, destCounty: destination.district,
+      destAddress: destination.address, weight,
+      sendTime: this.options.default_send_time ?? formatSFDateTime(new Date()),
       paymentTerms: this.options.default_payment_terms,
-      srcAddress: src.address,
-      destAddress: this.options.default_dest_address,
+      ...(this.options.monthly_card ? { monthlyCard: this.options.monthly_card } : {}),
     }
-  }
-
-  protected formatDateTime(date: Date): string {
-    const pad = (n: number) => `${n}`.padStart(2, "0")
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
-      date.getHours()
-    )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
   }
 }

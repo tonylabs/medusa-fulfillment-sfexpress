@@ -1,178 +1,176 @@
-<p align="center">
-  <a href="https://www.medusajs.com">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://user-images.githubusercontent.com/59018053/229103275-b5e482bb-4601-46e6-8142-244f531cebdb.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://user-images.githubusercontent.com/59018053/229103726-e5b529a3-9b3f-4970-8a1f-c6af37f087bf.svg">
-    <img alt="Medusa logo" src="https://user-images.githubusercontent.com/59018053/229103726-e5b529a3-9b3f-4970-8a1f-c6af37f087bf.svg">
-    </picture>
-  </a>
-</p>
-<h1 align="center">
-  Medusa SF-Express Fulfillment
-</h1>
+# Medusa SF Express fulfillment
 
-<h4 align="center">
-  <a href="https://docs.medusajs.com">Documentation</a> |
-  <a href="https://www.medusajs.com">Website</a>
-</h4>
+SF Express checkout rates for Medusa v2. Tested against the plugin's locked Medusa
+2.11.3 and the Cybermaker backend's Medusa 2.17.2. Node 20+ is required.
 
-<p align="center">
-  Building blocks for digital commerce
-</p>
+## What works
 
-## Compatibility
+- Flat shipping options use Medusa's configured prices and require no carrier quote.
+- Calculated shipping options query `EXP_RECE_QUERY_DELIVERTM` for the actual cart,
+  destination and fulfilling stock location. Rates are supported for mainland China
+  routes in **CNY**; use flat prices for other routes/currencies. No currency conversion
+  is performed and amounts use Medusa v2 major currency units (18.5 means CNY 18.50).
+- Standard (`2`) and Express (`1`) are available in the admin catalog by default.
+  Optional route-based discovery calls `EXP_RECE_PSDS_PRODUCT_RECOMMEND`.
+- OAuth2 access tokens are cached, concurrent token requests are shared, and an expired
+  token is refreshed once. Transport failures and unsuccessful business responses fail
+  the quote rather than producing a free shipping rate.
 
-This plugin is compatible with versions >= 2.11.x of `@medusajs/medusa`.
+**Carrier booking is manual.** Creating/cancelling a fulfillment only records the action
+in Medusa. It does not create/cancel an SF waybill, arrange collection, generate a label,
+or send a return request. Book/cancel shipments separately and enter tracking details
+in Medusa. Automatic carrier order/label integration requires the corresponding SF API
+contracts; this repository currently documents product discovery, rates and tracking.
 
-## Table of Contents
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Configuration](#configuration)
-    - [Configuration Options](#configuration-options)
-    - [Environment Variables](#environment-variables)
-    - [Authentication](#authentication)
-
-## Prerequisites
-- Node.js v20 or higher
-- Medusa server v2.11.3 or higher
-- [SF-Express](https://open.sf-express.com/) account and API credential
-
-## Installation
+## Install and configure
 
 ```bash
 yarn add @gerbergpt/medusa-fulfillment-sfexpress
 ```
 
-## Configuration
+Register both the fulfillment provider and plugin (the latter adds the admin page and
+legacy settings module):
 
-Add the provider module in your `medusa-config.ts` file:
+```ts
+import { defineConfig, Modules } from "@medusajs/framework/utils"
 
-```typescript
 module.exports = defineConfig({
-  projectConfig: {
-    // ...
-  },
-  modules: [
-    // ... other modules
-    {
-      key: Modules.FULFILLMENT,
-      resolve: "@medusajs/fulfillment",
-      options: {
-        providers: [
-          {
-            id: "sf-express",
-            resolve: "@gerbergpt/medusa-fulfillment-sfexpress/providers",
-            options: {
-              sandbox: process.env.SFEXPRESS_ENV === "sandbox",
-              partner_id: process.env.SFEXPRESS_PARTNER_ID,
-              secret_sandbox: process.env.SFEXPRESS_SECRET_SANDBOX,
-              secret_production: process.env.SFEXPRESS_SECRET_PRODUCTION,
-              // Origin ("ship from") is taken from the Medusa stock location that
-              // fulfils the shipping option (Settings → Locations & Shipping),
-              // not from static options. Only destination fallbacks remain.
-              default_dest_province: "Guangdong Province",
-              default_dest_city: "Guangzhou City",
-              default_payment_terms: "1", // 1: Sender Pay; 2: Receiver Pay; 3: Sender Third-Party; 4: Receiver Third-Party
-            },
-          },
-        ],
-      },
+  // Retain your application's other configuration and providers.
+  modules: [{
+    key: Modules.FULFILLMENT,
+    resolve: "@medusajs/medusa/fulfillment",
+    options: {
+      providers: [{
+        id: "sf-express",
+        resolve: "@gerbergpt/medusa-fulfillment-sfexpress/providers/fulfillment-sfexpress",
+        options: {
+          sandbox: !["prod", "production"].includes(process.env.SFEXPRESS_ENV ?? "sandbox"),
+          partner_id: process.env.SFEXPRESS_PARTNER_ID,
+          secret_sandbox: process.env.SFEXPRESS_SECRET_SANDBOX,
+          secret_production: process.env.SFEXPRESS_SECRET_PRODUCTION,
+          monthly_card: process.env.SFEXPRESS_MONTHLY_CARD, // Optional negotiated rates
+          default_payment_terms: "1", // Sender pays
+          default_item_weight_grams: 1000,
+          debug: false,
+        },
+      }],
     },
-  ]
+  }],
+  plugins: [{ resolve: "@gerbergpt/medusa-fulfillment-sfexpress", options: {} }],
 })
 ```
 
-## Environment Variables
+Use `SFEXPRESS_ENV=sandbox` for development. Both `production` and the legacy `prod`
+value select production in the example. Set the corresponding partner secret. Run
+`yarn medusa db:migrate` after adding the plugin's module to a new application.
 
-Create or update your `.env` file with the following variables:
+In Medusa Admin, link the provider to a stock location and create shipping options in
+its service zone. Select Flat or Calculated as appropriate. Set the stock location's
+province, city and street address. Origin is read from `context.from_location`; each
+shipping option therefore quotes from its own location. Address line 2 (or metadata's
+`district`) supplies the district. Destination comes from the cart's shipping address.
+Do not configure a fallback destination for a general storefront: it could quote a
+route different from the customer's address.
 
-```bash
-SFEXPRESS_ENV=sandbox | production
-SFEXPRESS_PARTNER_ID=
-SFEXPRESS_SECRET_SANDBOX=
-SFEXPRESS_SECRET_PRODUCTION=
-DEFAULT_DEST_PROVINCE=
-DEFAULT_DEST_CITY=
-DEFAULT_PAYMENT_TERMS=1
-```
+Set accurate variant/product weights in **grams**. Variant weight takes precedence over
+product weight. Each unit of an unweighed item uses `default_item_weight_grams`; this
+fallback is an estimate, not a carrier guarantee. Payload weights are converted to kg.
+Carrier timestamps use Asia/Shanghai regardless of the backend's timezone.
 
-### Configuration Options
-- `partner_id` (**required**) – SF-Express partner/customer code.
-- `secret_sandbox` / `secret_production` (**required**) – SF-Express checkword for the corresponding environment. Used to retrieve OAuth2 access tokens.
-- `sandbox` – Use sandbox gateway when `true`.
-- Origin address – taken automatically from the Medusa **stock location** that fulfils the shipping option (Settings → Locations & Shipping) via `context.from_location`; there is no static origin option. Put the district (区) in the location's `address_2` if needed.
-- `default_dest_*` – Destination fallbacks used when the customer's checkout address is incomplete.
-- `default_payment_terms` – One of `1 | 2 | 3 | 4` (see SF docs). Defaults to `1`.
-
-### Authentication
-This plugin now authenticates with SF-Express using the OAuth2 token flow described in `docs/sf-express/API.md`. The provider exchanges `partner_id` and the environment-specific `secret` for an `accessToken`, caches it for its two-hour lifetime, and attaches it to all API calls. No message-digest signatures are required.
-
-
----
-
-## Development
-
-1. Install Yarn
-
-```bash
-npm i -g yarn
-```
-
-2. Publish Alipay payment locally via yalc:
-
-```bash
-cd medusa-fulfillment-sfexpress
-yarn install
-npx medusa plugin:publish
-```
-
-3. Navigate to your Medusa backend application and install the plugin:
-
-```bash
-npx medusa plugin:add @gerbergpt/medusa-fulfillment-sfexpress
-```
-After installation, you should see an entry pointing to the local yalc package:
+Existing option data remains compatible:
 
 ```json
-"dependencies": {
-  ...,
-  "@gerbergpt/medusa-fulfillment-sfexpress": "file:.yalc/@gerbergpt/medusa-fulfillment-sfexpress",
-  ...
+{ "id": "sf-standard", "data": { "businessType": "standard" } }
+```
+
+New configurations can use:
+
+```json
+{ "id": "sf-standard", "businessType": "2" }
+```
+
+`sf-express` / `express` maps to `1`. Numeric product codes from carrier discovery are
+also supported. Checkout-supplied data cannot override the configured service or fee.
+
+### Optional product discovery
+
+Medusa's `getFulfillmentOptions()` catalog method receives no customer or stock location.
+To query the carrier instead of using the two default catalog entries, configure a
+representative route in the provider options:
+
+```ts
+product_recommendation: {
+  origin: { province: "广东省", city: "深圳市", district: "南山区", address: "科技园1号" },
+  destination: { province: "广东省", city: "广州市", district: "越秀区", address: "西湖路38号" },
+  weight: 1, // kg
 }
 ```
 
-4. Configure your Medusa application (backend)
+The returned products describe this representative route. Checkout still checks the
+actual route; catalog discovery does not guarantee availability everywhere. A configured
+discovery call that fails surfaces the error; it does not silently invent services.
+The previous transport-mode/language/auto-load settings were unrelated to these SF APIs
+and never affected rates. The admin page now explains the actual supported configuration;
+legacy settings records/API are retained for compatibility.
 
-```typescript
-module.exports = defineConfig({
-  modules: [
-    {
-      key: Modules.FULFILLMENT,
-      resolve: "@medusajs/fulfillment",
-      options: {
-        providers: [
-          {
-            id: "sf-express",
-            resolve: "@gerbergpt/medusa-fulfillment-sfexpress/providers",
-            options: {
-              sandbox: process.env.SFEXPRESS_ENV === "prod",
-              partner_id: process.env.SFEXPRESS_PARTNER_ID,
-              secret_sandbox: process.env.SFEXPRESS_SECRET_SANDBOX,
-              secret_production: process.env.SFEXPRESS_SECRET_PRODUCTION,
-              debug: false,
-              // Origin comes from the fulfilling stock location's address.
-              default_payment_terms: "1"
-            },
-          },
-        ],
-      },
-    },
-  ],
-})
-```
+## Medusa quote-endpoint compatibility
 
-5. If you need to move the local npm package bridged by `yalc`, just run:
+The plugin overrides `/store/shipping-options/:id/calculate` for SFExpress options.
+Medusa 2.11/2.17's calculate-only workflow omits the cart currency; the adapter uses
+`listShippingOptionsForCartWithPricingWorkflow` so the quote and method-selection
+paths receive consistent currency, location and cart context. It also preserves cart
+sales-channel/service-zone eligibility. Other carriers delegate to Medusa's original
+handler. Register the plugin in `plugins` as well as the provider for this adapter to
+load. App-specific overrides of the same route take precedence and must preserve this
+context themselves.
+
+## Storefront integration
+
+Retrieve shipping options for the cart, then POST the cart ID to
+`/store/shipping-options/:id/calculate` for each calculated option. The response's
+`shipping_option.amount` is the quote. A failed, null or non-finite price must not appear
+as free shipping or remain selectable. A genuine numeric zero is valid.
+
+Refresh quotes when address, item quantities or currency change; ignore results from
+older requests. Disable calculated choices while quoting and until a valid price exists.
+Do not cache cart-specific shipping responses. Mixed-profile carts must have a valid
+selected method for **every required profile**, even if a profile has no quoted options.
+Medusa recalculates when adding the shipping method, so selection can also fail; show
+that error and let the customer choose another method.
+
+## Development and validation
 
 ```bash
-npx yalc remove @gerbergpt/medusa-fulfillment-sfexpress
+corepack yarn install --immutable
+corepack yarn test
+corepack yarn exec tsc --noEmit
+corepack yarn build
 ```
+
+Tests mock carrier responses and block outgoing network calls, including accidental
+unmocked calls. They cover fee validation, currency/route guards, Medusa option shapes,
+weight conversion, origin/destination payloads, product discovery, authentication retries,
+timeouts and the manual fulfillment response. No credentials are needed.
+
+For the sibling Cybermaker repositories:
+
+```bash
+cd ../medusa-cybermaker-backend
+bash scripts/use-local-sfexpress.sh
+# Restart the backend to load the copied build.
+```
+
+The helper copies only the compiled plugin and manifest into ignored `node_modules`,
+so it runs against the backend's own Medusa peers. It leaves registry dependencies and
+lockfiles unchanged. Rerun after plugin changes or after reinstalling backend dependencies.
+Run `bash scripts/dev-local.sh test:shipping` in the storefront for checkout price tests
+(Node 22.6+ for the built-in TypeScript test loader).
+
+A production release still needs a sandbox rate check with the merchant's SF
+account and a real shipment verification when booking is implemented. Sandbox fees are
+fixtures, not evidence of actual production prices. No npm release or deployment is
+performed by local development.
+
+References: [Medusa shipping options](https://docs.medusajs.com/resources/commerce-modules/fulfillment/shipping-option),
+[SF API contracts](docs/sf-express/API.md), [rate API](docs/sf-express/express/service_query.md),
+[product recommendations](docs/sf-express/express/product_query.md).

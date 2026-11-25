@@ -37,7 +37,8 @@
   "scripts": {
     "dev": "medusa plugin:develop",
     "build": "medusa plugin:build",
-    "push": "medusa plugin:build && yalc push"
+    "push": "medusa plugin:build && yalc push",
+    "test": "node --require ./tests/register.cjs --test tests/*.test.cjs"
   },
   "devDependencies": {
     "@medusajs/admin-sdk": "^2.0.0",
